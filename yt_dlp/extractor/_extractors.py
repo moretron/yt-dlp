@@ -1455,9 +1455,13 @@ from .popcorntv import PopcornTVIE
 from .pornbox import PornboxIE
 from .pornflip import PornFlipIE
 from .pornhub import (
+    PornHubCategoryIE,
+    PornHubCategoryShortIE,
     PornHubIE,
     PornHubPagedVideoListIE,
     PornHubPlaylistIE,
+    PornHubSearchIE,
+    PornHubSearchShortIE,
     PornHubUserIE,
     PornHubUserVideosUploadIE,
 )

@@ -4,7 +4,7 @@ import math
 import operator
 import re
 
-from .common import InfoExtractor
+from .common import InfoExtractor, SearchInfoExtractor
 from .openload import PhantomJSwrapper
 from ..networking import Request
 from ..networking.exceptions import HTTPError
@@ -538,14 +538,27 @@ class PornHubPlaylistBaseIE(PornHubBaseIE):
             r'(?s)(<div[^>]+class=["\']container.+)', webpage,
             'container', default=webpage)
 
-        return [
-            self.url_result(
-                f'http://www.{host}/{video_url}',
-                PornHubIE.ie_key(), video_title=title)
-            for video_url, title in orderedSet(re.findall(
+        # Result items are wrapped in <li ... data-video-vkey="X"> ... <img
+        # src="..."> ...</li>. Build a vkey -> thumbnail lookup so we can
+        # attach thumbnails to url_results (the flat-playlist consumer relies
+        # on `thumbnail` being set upfront).
+        thumbs = {}
+        for m in re.finditer(
+                r'data-video-vkey="(?P<vkey>[\da-z]+)"[\s\S]{0,3000}?<img[^>]+\b(?:data-image|src)="(?P<url>https?://[^"]+)"',
+                container):
+            thumbs.setdefault(m.group('vkey'), m.group('url'))
+
+        entries = []
+        for video_url, title in orderedSet(re.findall(
                 r'href="/?(view_video\.php\?.*\bviewkey=[\da-z]+[^"]*)"[^>]*\s+title="([^"]+)"',
-                container))
-        ]
+                container)):
+            vkey = self._search_regex(
+                r'viewkey=([\da-z]+)', video_url, 'vkey', default=None)
+            entries.append(self.url_result(
+                f'http://www.{host}/{video_url}',
+                PornHubIE.ie_key(), video_title=title,
+                thumbnail=thumbs.get(vkey)))
+        return entries
 
 
 class PornHubUserIE(PornHubPlaylistBaseIE):
@@ -833,3 +846,95 @@ class PornHubPlaylistIE(PornHubPlaylistBaseIE):
         self._set_age_cookies(host)
 
         return self.playlist_result(self._entries(mobj.group('url'), host, item_id), item_id)
+
+
+class PornHubSearchIE(SearchInfoExtractor, PornHubPagedPlaylistBaseIE):
+    IE_NAME = 'pornhub:search'
+    IE_DESC = 'PornHub search'
+    _SEARCH_KEY = 'pornhubsearch'
+    _TESTS = [{
+        'url': 'pornhubsearch5:lesbian',
+        'playlist_mincount': 5,
+        'info_dict': {
+            'id': 'lesbian',
+            'title': 'lesbian',
+        },
+    }]
+
+    def _search_results(self, query):
+        host = 'pornhub.com'
+        self._set_age_cookies(host)
+        search_url = update_url_query(
+            f'https://www.{host}/video/search', {'search': query})
+        yield from self._entries(search_url, host, query)
+
+
+class PornHubSearchShortIE(PornHubSearchIE):
+    IE_NAME = 'pornhub:search:short'
+    _SEARCH_KEY = 'phsearch'
+    _TESTS = [{
+        'url': 'phsearch5:lesbian',
+        'playlist_mincount': 5,
+        'info_dict': {
+            'id': 'lesbian',
+            'title': 'lesbian',
+        },
+    }]
+
+
+class PornHubCategoryIE(SearchInfoExtractor, PornHubPagedPlaylistBaseIE):
+    IE_NAME = 'pornhub:category'
+    IE_DESC = 'PornHub category'
+    # Uses the SearchInfoExtractor grammar `pornhubcategory(N|all|):<slug>` so
+    # callers can cap the number of items (e.g. `pornhubcategory24:teen`)
+    # instead of paginating through every video in the category.
+    _SEARCH_KEY = 'pornhubcategory'
+    _TESTS = [{
+        'url': 'pornhubcategory20:teen',
+        'playlist_mincount': 20,
+        'info_dict': {
+            'id': 'teen',
+            'title': 'teen',
+        },
+    }, {
+        'url': 'pornhubcategory20:lesbian',
+        'playlist_mincount': 20,
+        'info_dict': {
+            'id': 'lesbian',
+            'title': 'lesbian',
+        },
+    }]
+
+    def _search_results(self, query):
+        # `query` is the category slug (e.g. "teen", "lesbian").
+        host = 'pornhub.com'
+        self._set_age_cookies(host)
+        # Category pages live at either /categories/<slug> (legacy) or /<slug>
+        # (newer layout). Try both; a 404 on page 1 rolls over to the fallback.
+        for path in (f'/categories/{query}', f'/{query}'):
+            entries = self._entries(f'https://www.{host}{path}', host, query)
+            try:
+                first = next(entries)
+            except StopIteration:
+                continue
+            except ExtractorError as e:
+                if isinstance(e.cause, HTTPError) and e.cause.status == 404:
+                    continue
+                raise
+            yield first
+            yield from entries
+            return
+        raise ExtractorError(f'Category {query!r} not found', expected=True)
+
+
+class PornHubCategoryShortIE(PornHubCategoryIE):
+    IE_NAME = 'pornhub:category:short'
+    _SEARCH_KEY = 'phcategory'
+    _TESTS = [{
+        'url': 'phcategory20:teen',
+        'playlist_mincount': 20,
+        'info_dict': {
+            'id': 'teen',
+            'title': 'teen',
+        },
+    }]
