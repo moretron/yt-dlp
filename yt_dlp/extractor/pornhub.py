@@ -886,31 +886,88 @@ class PornHubCategoryIE(SearchInfoExtractor, PornHubPagedPlaylistBaseIE):
     IE_NAME = 'pornhub:category'
     IE_DESC = 'PornHub category'
     # Uses the SearchInfoExtractor grammar `pornhubcategory(N|all|):<slug>` so
-    # callers can cap the number of items (e.g. `pornhubcategory24:teen`)
-    # instead of paginating through every video in the category.
+    # callers can cap the number of items (e.g. `pornhubcategory24:asian`)
+    # instead of paginating through every video in the category. The slug is
+    # resolved to the site's numeric category id (`/video?c=1`); a numeric id
+    # can be given directly.
     _SEARCH_KEY = 'pornhubcategory'
     _TESTS = [{
+        'url': 'pornhubcategory20:asian',
+        'playlist_mincount': 20,
+        'info_dict': {
+            'id': 'asian',
+            'title': 'asian',
+        },
+    }, {
+        # slug with a space/hyphen in the display name
+        'url': 'pornhubcategory20:big-ass',
+        'playlist_mincount': 20,
+        'info_dict': {
+            'id': 'big-ass',
+            'title': 'big-ass',
+        },
+    }, {
+        # numeric id, equivalent to `lesbian`
+        'url': 'pornhubcategory20:27',
+        'playlist_mincount': 20,
+        'info_dict': {
+            'id': '27',
+            'title': '27',
+        },
+    }, {
         'url': 'pornhubcategory20:teen',
         'playlist_mincount': 20,
         'info_dict': {
             'id': 'teen',
             'title': 'teen',
         },
-    }, {
-        'url': 'pornhubcategory20:lesbian',
-        'playlist_mincount': 20,
-        'info_dict': {
-            'id': 'lesbian',
-            'title': 'lesbian',
-        },
     }]
 
+    @staticmethod
+    def _category_slug(name):
+        return re.sub(r'[^a-z0-9]+', '-', clean_html(name).lower()).strip('-')
+
+    def _category_ids(self, host):
+        """Map category slug -> numeric id by scraping the categories page.
+
+        The listing that actually paginates is `/video?c=<id>`; the slug paths
+        are a thinner view that doesn't exist for every category. Cached on
+        disk, since ids only change when the site adds a category."""
+        cached = self.cache.load('pornhub', 'category-ids-v1')
+        if cached:
+            return cached
+        webpage = self._download_webpage(
+            f'https://www.{host}/categories', 'categories',
+            'Downloading category list', impersonate=True, fatal=False) or ''
+        ids = {}
+        for mobj in re.finditer(
+                r'<li[^>]+\bclass="[^"]*\bcatPic\b[^"]*"[^>]*\bdata-category="(\d+)"([\s\S]{0,3000}?)</li>',
+                webpage):
+            name = self._search_regex(
+                r'<strong>([^<]+)</strong>', mobj.group(2), 'category name', default=None)
+            if name:
+                ids.setdefault(self._category_slug(name), int(mobj.group(1)))
+        if ids:
+            self.cache.store('pornhub', 'category-ids-v1', ids)
+        else:
+            self.report_warning('Could not read the category list; falling back to slug URLs')
+        return ids
+
     def _search_results(self, query):
-        # `query` is the category slug (e.g. "teen", "lesbian").
+        # `query` is a category slug ("asian", "big-ass") or a numeric id.
         host = 'pornhub.com'
         self._set_age_cookies(host)
-        # Category pages live at either /categories/<slug> (legacy) or /<slug>
-        # (newer layout). Try both; a 404 on page 1 rolls over to the fallback.
+        query = query.strip()
+
+        category_id = int(query) if query.isdigit() else self._category_ids(host).get(
+            self._category_slug(query))
+        if category_id:
+            self.to_screen(f'Category {query!r} is c={category_id}')
+            yield from self._entries(f'https://www.{host}/video?c={category_id}', host, query)
+            return
+
+        # Unknown to the category list — fall back to the slug paths, which
+        # still work for some categories. A 404 on page 1 rolls over.
         for path in (f'/categories/{query}', f'/{query}'):
             entries = self._entries(f'https://www.{host}{path}', host, query)
             try:
